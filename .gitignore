@@ -1,10 +1,44 @@
-# Virtual environments
+# Dependencies (bun/node)
+node_modules/
+
+# Lockfiles
+bun.lock
+
+# Output
+out/
+dist/
+*.tgz
+
+# Code coverage
+coverage/
+*.lcov
+
+# Logs
+logs/
+*.log
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Environment variable files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.dev.vars
+
+# Caches
+.eslintcache
+.cache/
+*.tsbuildinfo
+
+# Wrangler
+.wrangler/
+
+# Python (legacy)
 .venv/
 venv/
 env/
 .env/
-
-# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -12,8 +46,6 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
-downloads/
 eggs/
 .eggs/
 lib/
@@ -25,10 +57,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
-# Logs
-*.log
-proxy.log
+.uv/
+uv.lock
 
 # IDE
 .idea/
@@ -40,12 +70,3 @@ proxy.log
 # OS
 .DS_Store
 Thumbs.db
-
-# Environment variables
-.env
-.env.local
-.env.*.local
-
-# uv
-.uv/
-uv.lock

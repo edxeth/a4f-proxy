@@ -1,0 +1,21 @@
+name = "devkit-anthropic-proxy"
+main = "src/index.ts"
+compatibility_date = "2025-01-13"
+
+# =============================================================================
+# SECRETS (Required)
+# =============================================================================
+# These secrets must be set via `bunx wrangler secret put <SECRET_NAME>`
+# Do NOT put actual values in this file!
+#
+# Required secrets:
+#   A4F_API_KEY     - Your real A4F API key (used to forward requests to A4F)
+#   VALID_API_KEYS  - Comma-separated list of API keys you give to users
+#
+# Example setup:
+#   bunx wrangler secret put A4F_API_KEY
+#   bunx wrangler secret put VALID_API_KEYS
+#
+# For VALID_API_KEYS, enter a comma-separated list like:
+#   user-key-1,user-key-2,user-key-3
+# =============================================================================
