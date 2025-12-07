@@ -70,3 +70,7 @@ uv.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# AI assistant rules
+AGENTS.md
+.roo/
