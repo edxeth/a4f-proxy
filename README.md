@@ -9,9 +9,9 @@ A CloudFlare Worker that proxies Anthropic's `v1/messages` API to A4F's OpenAI-c
 - ✅ **GET /v1/models** - List available Claude models
 - ✅ **GET /health** - Health check endpoint
 - ✅ Full streaming support with proper SSE event conversion
-- ✅ Dual authentication: `x-api-key` header (Anthropic) or `Authorization: Bearer` (OpenAI)
+- ✅ Anthropic authentication: `x-api-key` header
 - ✅ Handles system prompts, multi-modal content (images), and tool calling
-- ✅ Accurate token counting using `@lenml/tokenizer-claude`
+- ✅ Near accurate Claude token counting via `@lenml/tokenizer-claude`
 - ✅ CORS support for browser-based clients
 
 ---
@@ -21,7 +21,6 @@ A CloudFlare Worker that proxies Anthropic's `v1/messages` API to A4F's OpenAI-c
 ### Prerequisites
 
 - [Bun](https://bun.sh/) runtime installed
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (included via `bunx`)
 
 ### Install Dependencies
 
