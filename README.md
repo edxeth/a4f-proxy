@@ -470,9 +470,10 @@ To use this proxy with Roo Code v3.35.3+ or Cline, configure the Anthropic provi
 |---------|-------|
 | **API Provider** | `Anthropic` |
 | **Anthropic API Key** | Your user API key (from `VALID_API_KEYS`) |
+| **Pass Anthropic API Key as Authorization header** | ✅ Checked |
 | **Use custom base URL** | ✅ Checked |
-| **Custom Base URL** | `https://your-worker-name.your-subdomain.workers.dev` |
-| **Model** | `claude-sonnet-4-20250514` (or any Claude model) |
+| **Custom Base URL** | `https://your-worker-name.your-subdomain.workers.dev` OR `http://localhost:8787` |
+| **Model** | `claude-opus-4-5-20251101` (or any Claude model) |
 | **Tool Call Protocol** | `XML` (recommended for A4F) |
 
 ### Important Notes
