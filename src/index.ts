@@ -190,12 +190,84 @@ interface OpenAIStreamChunk {
   };
 }
 
+// Responses API Request
+interface ResponsesRequest {
+  model: string;
+  input: string | ResponsesInputMessage[];
+  instructions?: string;
+  tool_choice?: string | object;
+  stream?: boolean;
+  store?: boolean;
+  previous_response_id?: string;
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  tools?: unknown[];
+}
+
+interface ResponsesInputMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | unknown[] | null;
+  name?: string;
+  tool_calls?: unknown[];
+  tool_call_id?: string;
+}
+
+// Responses API Response
+interface ResponsesResponse {
+  id: string;
+  object: "response";
+  created_at: number;
+  model: string;
+  output: ResponsesOutputItem[];
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+type ResponsesOutputItem = ResponsesReasoningItem | ResponsesMessageItem | ResponsesFunctionCallItem;
+
+interface ResponsesReasoningItem {
+  id: string;
+  type: "reasoning";
+  content: string[];
+  summary: string[];
+}
+
+interface ResponsesMessageItem {
+  id: string;
+  type: "message";
+  role: "assistant";
+  status: "completed" | "in_progress";
+  content: ResponsesOutputTextContent[];
+}
+
+interface ResponsesOutputTextContent {
+  type: "output_text";
+  text: string;
+  annotations: unknown[];
+  logprobs: unknown[];
+}
+
+// Function call output item for tool calls
+interface ResponsesFunctionCallItem {
+  id: string;
+  type: "function_call";
+  call_id: string;
+  name: string;
+  arguments: string;
+  status: "completed" | "in_progress";
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
 
 const A4F_BASE_URL = "https://api.a4f.co/v1";
 const A4F_PROVIDER_PREFIX = "provider-7";
+const A4F_RESPONSES_PROVIDER_PREFIX = "provider-5";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -1126,9 +1198,25 @@ async function handleModels(env: Env): Promise<Response> {
         owned_by: "anthropic",
       }));
 
+    // Filter for GPT-5.1 Codex models (provider-5/gpt-5.1-codex* and gpt-5-codex) and strip the prefix
+    const gptCodexModels = a4fResponse.data
+      .filter((model) => {
+        const id = model.id;
+        return (
+          id.startsWith(`${A4F_RESPONSES_PROVIDER_PREFIX}/gpt-5.1-codex`) ||
+          id === `${A4F_RESPONSES_PROVIDER_PREFIX}/gpt-5-codex`
+        );
+      })
+      .map((model) => ({
+        id: model.id.replace(`${A4F_RESPONSES_PROVIDER_PREFIX}/`, ""),
+        object: "model",
+        created: model.created,
+        owned_by: "openai",
+      }));
+
     const models = {
       object: "list",
-      data: claudeModels,
+      data: [...claudeModels, ...gptCodexModels],
     };
 
     return new Response(JSON.stringify(models), {
@@ -1176,6 +1264,542 @@ function handleNotFound(request: Request): Response {
 }
 
 // ============================================================================
+// OpenAI Chat Completions Handler (Pass-through)
+// ============================================================================
+
+/**
+ * Create an OpenAI-style error response
+ */
+function createOpenAIError(
+  message: string,
+  type: string,
+  status: number
+): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        message,
+        type,
+        param: null,
+        code: null,
+      },
+    }),
+    {
+      status,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    }
+  );
+}
+
+/**
+ * Handle OpenAI-format /v1/chat/completions requests
+ * Pass through to A4F backend without model name modification
+ */
+async function handleChatCompletions(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  // Extract user's API key from request
+  const userApiKey = extractApiKey(request);
+  if (!userApiKey) {
+    return createOpenAIError(
+      "Missing API key. Please include an API key in the Authorization header.",
+      "invalid_request_error",
+      401
+    );
+  }
+
+  // Validate user's API key against allowed keys
+  if (!validateUserApiKey(userApiKey, env.VALID_API_KEYS)) {
+    return createOpenAIError(
+      "Invalid API key provided.",
+      "invalid_request_error",
+      401
+    );
+  }
+
+  // Use the real A4F API key for forwarding requests
+  const a4fApiKey = env.A4F_API_KEY;
+  if (!a4fApiKey) {
+    return createOpenAIError(
+      "Server configuration error: A4F API key not configured",
+      "server_error",
+      500
+    );
+  }
+
+  // Parse request body
+  let body: OpenAIRequest;
+  try {
+    body = (await request.json()) as OpenAIRequest;
+  } catch (e) {
+    return createOpenAIError(
+      e instanceof Error ? e.message : "Invalid JSON in request body",
+      "invalid_request_error",
+      400
+    );
+  }
+
+  const isStreaming = body.stream === true;
+
+  // Handle streaming requests
+  if (isStreaming) {
+    try {
+      const response = await fetch(`${A4F_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${a4fApiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return createOpenAIError(
+          errorText || `Upstream error: ${response.status}`,
+          "api_error",
+          response.status
+        );
+      }
+
+      // Pass through the stream directly
+      return new Response(response.body, {
+        headers: {
+          ...CORS_HEADERS,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    } catch (error) {
+      return createOpenAIError(
+        error instanceof Error ? error.message : String(error),
+        "api_error",
+        500
+      );
+    }
+  }
+
+  // Handle non-streaming requests
+  try {
+    const response = await fetch(`${A4F_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${a4fApiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return createOpenAIError(
+        errorText || `Upstream error: ${response.status}`,
+        "api_error",
+        response.status
+      );
+    }
+
+    const openaiResponse = await response.json();
+
+    return new Response(JSON.stringify(openaiResponse), {
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
+  } catch (error) {
+    return createOpenAIError(
+      error instanceof Error ? error.message : String(error),
+      "api_error",
+      500
+    );
+  }
+}
+
+// ============================================================================
+// Responses API SSE Conversion
+// ============================================================================
+
+/**
+ * Convert a non-streaming Responses API response to SSE format
+ * This handles all output item types including function_call for tool use
+ */
+function convertResponsesToSSE(response: ResponsesResponse): Response {
+  const encoder = new TextEncoder();
+  
+  const stream = new ReadableStream({
+    start(controller) {
+      // Send response.created event
+      const createdEvent = {
+        type: "response.created",
+        response: {
+          id: response.id,
+          object: "response",
+          created_at: response.created_at,
+          model: response.model,
+          status: "in_progress",
+          output: [],
+          usage: null,
+        },
+      };
+      controller.enqueue(encoder.encode(`event: response.created\ndata: ${JSON.stringify(createdEvent)}\n\n`));
+
+      // Send response.in_progress event
+      const inProgressEvent = {
+        type: "response.in_progress",
+        response: {
+          id: response.id,
+          object: "response",
+          created_at: response.created_at,
+          model: response.model,
+          status: "in_progress",
+          output: [],
+          usage: null,
+        },
+      };
+      controller.enqueue(encoder.encode(`event: response.in_progress\ndata: ${JSON.stringify(inProgressEvent)}\n\n`));
+
+      // Process each output item
+      for (let i = 0; i < response.output.length; i++) {
+        const item = response.output[i];
+        if (!item) continue;
+        
+        if (item.type === "reasoning") {
+          // Send reasoning item events
+          const reasoningItem = item as ResponsesReasoningItem;
+          
+          // Item created
+          const itemCreatedEvent = {
+            type: "response.output_item.added",
+            output_index: i,
+            item: {
+              id: reasoningItem.id,
+              type: "reasoning",
+              status: "in_progress",
+              content: [],
+              summary: [],
+            },
+          };
+          controller.enqueue(encoder.encode(`event: response.output_item.added\ndata: ${JSON.stringify(itemCreatedEvent)}\n\n`));
+
+          // Send content
+          for (let j = 0; j < reasoningItem.content.length; j++) {
+            const contentDelta = {
+              type: "response.reasoning_summary_part.added",
+              item_id: reasoningItem.id,
+              output_index: i,
+              summary_index: j,
+              part: { type: "summary_text", text: reasoningItem.summary[j] || "" },
+            };
+            controller.enqueue(encoder.encode(`event: response.reasoning_summary_part.added\ndata: ${JSON.stringify(contentDelta)}\n\n`));
+          }
+
+          // Item done
+          const itemDoneEvent = {
+            type: "response.output_item.done",
+            output_index: i,
+            item: reasoningItem,
+          };
+          controller.enqueue(encoder.encode(`event: response.output_item.done\ndata: ${JSON.stringify(itemDoneEvent)}\n\n`));
+          
+        } else if (item.type === "message") {
+          // Send message item events
+          const messageItem = item as ResponsesMessageItem;
+          
+          // Item created
+          const itemCreatedEvent = {
+            type: "response.output_item.added",
+            output_index: i,
+            item: {
+              id: messageItem.id,
+              type: "message",
+              role: "assistant",
+              status: "in_progress",
+              content: [],
+            },
+          };
+          controller.enqueue(encoder.encode(`event: response.output_item.added\ndata: ${JSON.stringify(itemCreatedEvent)}\n\n`));
+
+          // Send content parts
+          for (let j = 0; j < messageItem.content.length; j++) {
+            const contentPart = messageItem.content[j];
+            if (!contentPart) continue;
+            
+            // Content part added
+            const contentAddedEvent = {
+              type: "response.content_part.added",
+              item_id: messageItem.id,
+              output_index: i,
+              content_index: j,
+              part: { type: "output_text", text: "", annotations: [], logprobs: [] },
+            };
+            controller.enqueue(encoder.encode(`event: response.content_part.added\ndata: ${JSON.stringify(contentAddedEvent)}\n\n`));
+
+            // Send text delta (send full text as one delta for simplicity)
+            const textDeltaEvent = {
+              type: "response.output_text.delta",
+              item_id: messageItem.id,
+              output_index: i,
+              content_index: j,
+              delta: contentPart.text,
+            };
+            controller.enqueue(encoder.encode(`event: response.output_text.delta\ndata: ${JSON.stringify(textDeltaEvent)}\n\n`));
+
+            // Text done event
+            const textDoneEvent = {
+              type: "response.output_text.done",
+              item_id: messageItem.id,
+              output_index: i,
+              content_index: j,
+              text: contentPart.text,
+            };
+            controller.enqueue(encoder.encode(`event: response.output_text.done\ndata: ${JSON.stringify(textDoneEvent)}\n\n`));
+
+            // Content part done
+            const contentDoneEvent = {
+              type: "response.content_part.done",
+              item_id: messageItem.id,
+              output_index: i,
+              content_index: j,
+              part: contentPart,
+            };
+            controller.enqueue(encoder.encode(`event: response.content_part.done\ndata: ${JSON.stringify(contentDoneEvent)}\n\n`));
+          }
+
+          // Item done
+          const itemDoneEvent = {
+            type: "response.output_item.done",
+            output_index: i,
+            item: messageItem,
+          };
+          controller.enqueue(encoder.encode(`event: response.output_item.done\ndata: ${JSON.stringify(itemDoneEvent)}\n\n`));
+          
+        } else if (item.type === "function_call") {
+          // Send function_call item events for tool calls
+          const functionCallItem = item as ResponsesFunctionCallItem;
+          
+          // Item created
+          const itemCreatedEvent = {
+            type: "response.output_item.added",
+            output_index: i,
+            item: {
+              id: functionCallItem.id,
+              type: "function_call",
+              call_id: functionCallItem.call_id,
+              name: functionCallItem.name,
+              arguments: "",
+              status: "in_progress",
+            },
+          };
+          controller.enqueue(encoder.encode(`event: response.output_item.added\ndata: ${JSON.stringify(itemCreatedEvent)}\n\n`));
+
+          // Send function call arguments delta (send full arguments as one delta)
+          const argsDeltaEvent = {
+            type: "response.function_call_arguments.delta",
+            item_id: functionCallItem.id,
+            output_index: i,
+            call_id: functionCallItem.call_id,
+            delta: functionCallItem.arguments,
+          };
+          controller.enqueue(encoder.encode(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify(argsDeltaEvent)}\n\n`));
+
+          // Send function call arguments done
+          const argsDoneEvent = {
+            type: "response.function_call_arguments.done",
+            item_id: functionCallItem.id,
+            output_index: i,
+            call_id: functionCallItem.call_id,
+            arguments: functionCallItem.arguments,
+          };
+          controller.enqueue(encoder.encode(`event: response.function_call_arguments.done\ndata: ${JSON.stringify(argsDoneEvent)}\n\n`));
+
+          // Item done
+          const itemDoneEvent = {
+            type: "response.output_item.done",
+            output_index: i,
+            item: functionCallItem,
+          };
+          controller.enqueue(encoder.encode(`event: response.output_item.done\ndata: ${JSON.stringify(itemDoneEvent)}\n\n`));
+        }
+      }
+
+      // Send response.completed event
+      const completedEvent = {
+        type: "response.completed",
+        response: {
+          id: response.id,
+          object: "response",
+          created_at: response.created_at,
+          model: response.model,
+          status: "completed",
+          output: response.output,
+          usage: response.usage,
+        },
+      };
+      controller.enqueue(encoder.encode(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`));
+
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      ...CORS_HEADERS,
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+// ============================================================================
+// Responses API Handler
+// ============================================================================
+
+/**
+ * Handle OpenAI-format /v1/responses requests
+ * Forward to A4F backend with provider-5 prefix for model names
+ *
+ * IMPORTANT: This handler properly supports function_call output items
+ * for tool use. The proxy does not strip tools from streaming requests.
+ */
+async function handleResponses(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  // Extract user's API key from request
+  const userApiKey = extractApiKey(request);
+  if (!userApiKey) {
+    return createOpenAIError(
+      "Missing API key. Please include an API key in the Authorization header.",
+      "invalid_request_error",
+      401
+    );
+  }
+
+  // Validate user's API key against allowed keys
+  if (!validateUserApiKey(userApiKey, env.VALID_API_KEYS)) {
+    return createOpenAIError(
+      "Invalid API key provided.",
+      "invalid_request_error",
+      401
+    );
+  }
+
+  // Use the real A4F API key for forwarding requests
+  const a4fApiKey = env.A4F_API_KEY;
+  if (!a4fApiKey) {
+    return createOpenAIError(
+      "Server configuration error: A4F API key not configured",
+      "server_error",
+      500
+    );
+  }
+
+  // Parse request body
+  let body: ResponsesRequest;
+  try {
+    body = (await request.json()) as ResponsesRequest;
+  } catch (e) {
+    return createOpenAIError(
+      e instanceof Error ? e.message : "Invalid JSON in request body",
+      "invalid_request_error",
+      400
+    );
+  }
+
+  const isStreaming = body.stream === true;
+
+  // Add provider-5 prefix to model name
+  // Strip reasoning.summary field as A4F streaming doesn't support it
+  const reasoning = (body as unknown as Record<string, unknown>).reasoning as Record<string, unknown> | undefined;
+  const modifiedReasoning = reasoning ? { effort: reasoning.effort } : undefined;
+  
+  const modifiedBody = {
+    ...body,
+    model: `${A4F_RESPONSES_PROVIDER_PREFIX}/${body.model}`,
+    ...(modifiedReasoning && { reasoning: modifiedReasoning }),
+  };
+
+  // Handle streaming requests
+  if (isStreaming) {
+    try {
+      const response = await fetch(`${A4F_BASE_URL}/responses`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${a4fApiKey}`,
+        },
+        body: JSON.stringify(modifiedBody),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return createOpenAIError(
+          errorText || `Upstream error: ${response.status}`,
+          "api_error",
+          response.status
+        );
+      }
+
+      // Pass through the stream directly
+      return new Response(response.body, {
+        headers: {
+          ...CORS_HEADERS,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    } catch (error) {
+      return createOpenAIError(
+        error instanceof Error ? error.message : String(error),
+        "api_error",
+        500
+      );
+    }
+  }
+
+  // Handle non-streaming requests
+  try {
+    const response = await fetch(`${A4F_BASE_URL}/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${a4fApiKey}`,
+      },
+      body: JSON.stringify(modifiedBody),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return createOpenAIError(
+        errorText || `Upstream error: ${response.status}`,
+        "api_error",
+        response.status
+      );
+    }
+
+    const a4fResponse = (await response.json()) as ResponsesResponse;
+
+    // Strip provider-5 prefix from model name in response
+    const modifiedResponse = {
+      ...a4fResponse,
+      model: a4fResponse.model.replace(`${A4F_RESPONSES_PROVIDER_PREFIX}/`, ""),
+    };
+
+    return new Response(JSON.stringify(modifiedResponse), {
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
+  } catch (error) {
+    return createOpenAIError(
+      error instanceof Error ? error.message : String(error),
+      "api_error",
+      500
+    );
+  }
+}
+
+// ============================================================================
 // Main Handler
 // ============================================================================
 
@@ -1186,28 +1810,47 @@ export default {
     _ctx: ExecutionContext
   ): Promise<Response> {
     const url = new URL(request.url);
-    const { pathname } = url;
+    let { pathname } = url;
     const method = request.method;
+
+    // Normalize paths with various prefix issues (workaround for Roo Code subtask bugs)
+    // Case 1: Double /v1 prefix - "node" client appends /v1/... to base URL that already has /v1
+    if (pathname.startsWith("/v1/v1/")) {
+      pathname = pathname.replace("/v1/v1/", "/v1/");
+    }
+    // Case 2: Double slash prefix - "node" client creates //v1/... path
+    if (pathname.startsWith("//")) {
+      pathname = pathname.replace(/^\/+/, "/");
+    }
 
     // Handle CORS preflight
     if (method === "OPTIONS") {
       return handleOptions();
     }
 
-    // Route requests
-    if (pathname === "/v1/messages" && method === "POST") {
+    // Route requests - support both /v1/* and /* paths for flexibility
+    // This handles clients that use different base URL configurations
+    if ((pathname === "/v1/messages" || pathname === "/messages") && method === "POST") {
       return handleMessages(request, env);
     }
 
-    if (pathname === "/v1/messages/count_tokens" && method === "POST") {
+    if ((pathname === "/v1/messages/count_tokens" || pathname === "/messages/count_tokens") && method === "POST") {
       return handleCountTokens(request);
+    }
+
+    if ((pathname === "/v1/chat/completions" || pathname === "/chat/completions") && method === "POST") {
+      return handleChatCompletions(request, env);
+    }
+
+    if ((pathname === "/v1/responses" || pathname === "/responses") && method === "POST") {
+      return handleResponses(request, env);
     }
 
     if (pathname === "/health" && method === "GET") {
       return handleHealth();
     }
 
-    if (pathname === "/v1/models" && method === "GET") {
+    if ((pathname === "/v1/models" || pathname === "/models") && method === "GET") {
       return handleModels(env);
     }
 

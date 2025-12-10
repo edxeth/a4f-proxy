@@ -1,18 +1,217 @@
 # Devkit Anthropic Proxy
 
-A CloudFlare Worker that proxies Anthropic's `v1/messages` API to A4F's OpenAI-compatible API, enabling tools like Roo Code, Cline, and other Anthropic API clients to work seamlessly with A4F's API gateway.
+A CloudFlare Worker that proxies multiple API formats to A4F's API gateway, enabling tools like Roo Code, Cline, and other AI clients to work seamlessly with A4F's backend.
 
 ## Features
 
+### Anthropic API (Messages)
 - ✅ **POST /v1/messages** - Main Anthropic Messages API endpoint
 - ✅ **POST /v1/messages/count_tokens** - Token counting endpoint
-- ✅ **GET /v1/models** - List available Claude models
-- ✅ **GET /health** - Health check endpoint
 - ✅ Full streaming support with proper SSE event conversion
-- ✅ Anthropic authentication: `x-api-key` header
 - ✅ Handles system prompts, multi-modal content (images), and tool calling
 - ✅ Near accurate Claude token counting via `@lenml/tokenizer-claude`
+
+### OpenAI API (Chat Completions)
+- ✅ **POST /v1/chat/completions** - OpenAI Chat Completions API (pass-through)
+- ✅ Full streaming support (SSE pass-through)
+- ✅ Direct forwarding to A4F backend
+
+### OpenAI Responses API
+- ✅ **POST /v1/responses** - OpenAI Responses API for GPT-5.1 Codex models
+- ✅ Streaming and non-streaming support
+- ✅ Automatic model prefix handling
+
+### Common Features
+- ✅ **GET /v1/models** - List available models (Claude + GPT-5.1 Codex)
+- ✅ **GET /health** - Health check endpoint
+- ✅ Dual authentication: `x-api-key` header (Anthropic) or `Authorization: Bearer` (OpenAI)
 - ✅ CORS support for browser-based clients
+
+---
+
+## API Endpoints
+
+### Authentication
+
+All endpoints (except `/health`) require authentication via one of:
+- `x-api-key: YOUR_API_KEY` header (Anthropic style)
+- `Authorization: Bearer YOUR_API_KEY` header (OpenAI style)
+
+### Model Name Handling
+
+Different endpoints handle model names differently:
+
+| Endpoint | Client Sends | Proxy Adds Prefix | Example |
+|----------|--------------|-------------------|---------|
+| `/v1/messages` | Model name only | `provider-7/` | `claude-sonnet-4-20250514` → `provider-7/claude-sonnet-4-20250514` |
+| `/v1/chat/completions` | Full model ID | None (pass-through) | `provider-7/claude-sonnet-4-20250514` |
+| `/v1/responses` | Model name only | `provider-5/` | `gpt-5.1-codex` → `provider-5/gpt-5.1-codex` |
+| `/v1/models` | N/A | Strips prefixes | Returns `claude-sonnet-4-20250514`, `gpt-5.1-codex` |
+
+### Health Check
+
+```bash
+curl http://localhost:8787/health
+```
+
+Response:
+```json
+{"status":"ok","service":"devkit-anthropic-proxy"}
+```
+
+### List Models
+
+Returns available Claude models (from provider-7) and GPT-5.1 Codex models (from provider-5) with prefixes stripped.
+
+```bash
+curl http://localhost:8787/v1/models \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+Response:
+```json
+{
+  "object": "list",
+  "data": [
+    {"id": "claude-sonnet-4-20250514", "object": "model", "owned_by": "anthropic"},
+    {"id": "claude-opus-4-5-20251101", "object": "model", "owned_by": "anthropic"},
+    {"id": "gpt-5.1-codex", "object": "model", "owned_by": "openai"},
+    {"id": "gpt-5.1-codex-mini", "object": "model", "owned_by": "openai"}
+  ]
+}
+```
+
+### Anthropic Messages API (`/v1/messages`)
+
+Converts Anthropic API format to OpenAI format, forwards to A4F, and converts the response back.
+
+**Non-Streaming:**
+```bash
+curl -X POST http://localhost:8787/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: YOUR_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "max_tokens": 100,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+**Streaming:**
+```bash
+curl -X POST http://localhost:8787/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: YOUR_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "max_tokens": 100,
+    "stream": true,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### OpenAI Chat Completions API (`/v1/chat/completions`)
+
+Pass-through endpoint for OpenAI-format requests. Model names are NOT modified - you must include the full provider prefix.
+
+**Non-Streaming:**
+```bash
+curl -X POST http://localhost:8787/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "model": "provider-7/claude-sonnet-4-20250514",
+    "max_tokens": 100,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+**Streaming:**
+```bash
+curl -X POST http://localhost:8787/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "model": "provider-7/claude-sonnet-4-20250514",
+    "max_tokens": 100,
+    "stream": true,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### OpenAI Responses API (`/v1/responses`)
+
+For GPT-5.1 Codex models. Automatically adds `provider-5/` prefix to model names.
+
+**Non-Streaming:**
+```bash
+curl -X POST http://localhost:8787/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "model": "gpt-5.1-codex",
+    "input": "Say hello"
+  }'
+```
+
+**Streaming:**
+```bash
+curl -X POST http://localhost:8787/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "model": "gpt-5.1-codex",
+    "input": "Say hello",
+    "stream": true
+  }'
+```
+
+### Count Tokens
+
+```bash
+curl -X POST http://localhost:8787/v1/messages/count_tokens \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: YOUR_API_KEY" \
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "messages": [{"role": "user", "content": "Hello, world!"}]
+  }'
+```
+
+Response:
+```json
+{"input_tokens": 4}
+```
+
+---
+
+## Configuration Constants
+
+The following constants are defined in [`src/index.ts`](src/index.ts:258):
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `A4F_BASE_URL` | `https://api.a4f.co/v1` | A4F API base URL |
+| `A4F_PROVIDER_PREFIX` | `provider-7` | Prefix for Claude models |
+| `A4F_RESPONSES_PROVIDER_PREFIX` | `provider-5` | Prefix for GPT-5.1 Codex models |
+
+---
+
+## Workarounds & Implementation Notes
+
+### Reasoning Summary Stripping
+
+The `/v1/responses` endpoint strips the `reasoning.summary` field from requests before forwarding to A4F. This is because A4F's streaming implementation doesn't properly support this field. See [`handleResponses()`](src/index.ts:1593) for details.
+
+### Local Token Counting
+
+Token counts are calculated locally using `@lenml/tokenizer-claude` rather than relying on A4F's response. This ensures consistent token counting across streaming and non-streaming requests. See [`countTokens()`](src/index.ts:295).
+
+### Tool Choice Mapping
+
+Anthropic's `tool_choice.type: "any"` maps to OpenAI's `"required"`, not `"any"`. See [`convertToolChoice()`](src/index.ts:462).
 
 ---
 
@@ -237,73 +436,6 @@ bunx wrangler tail --status=ok
 
 ---
 
-## API Endpoints
-
-### Health Check
-
-```bash
-curl http://localhost:8787/health
-```
-
-Response:
-```json
-{"status":"ok","service":"devkit-anthropic-proxy"}
-```
-
-### List Models
-
-```bash
-curl http://localhost:8787/v1/models
-```
-
-### Messages (Non-Streaming)
-
-```bash
-curl -X POST http://localhost:8787/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: YOUR_USER_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{
-    "model": "claude-sonnet-4-5-20250929",
-    "max_tokens": 100,
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-### Messages (Streaming)
-
-```bash
-curl -X POST http://localhost:8787/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: YOUR_USER_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{
-    "model": "claude-sonnet-4-5-20250929",
-    "max_tokens": 100,
-    "stream": true,
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-### Count Tokens
-
-```bash
-curl -X POST http://localhost:8787/v1/messages/count_tokens \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: YOUR_USER_API_KEY" \
-  -d '{
-    "model": "claude-sonnet-4-5-20250929",
-    "messages": [{"role": "user", "content": "Hello, world!"}]
-  }'
-```
-
-Response:
-```json
-{"input_tokens": 4}
-```
-
----
-
 ## Security Best Practices
 
 1. **Keep the worker disabled when not in use** - This prevents unauthorized access and unexpected costs
@@ -340,14 +472,14 @@ To use this proxy with Roo Code v3.35.3+ or Cline, configure the Anthropic provi
 | **Anthropic API Key** | Your user API key (from `VALID_API_KEYS`) |
 | **Use custom base URL** | ✅ Checked |
 | **Custom Base URL** | `https://your-worker-name.your-subdomain.workers.dev` |
-| **Model** | `claude-sonnet-4-5-20250929` (or any Claude model) |
+| **Model** | `claude-sonnet-4-20250514` (or any Claude model) |
 | **Tool Call Protocol** | `XML` (recommended for A4F) |
 
 ### Important Notes
 
 - **Model Name**: Use the model name WITHOUT the provider prefix:
-  - ✅ Correct: `claude-sonnet-4-5-20250929`
-  - ❌ Wrong: `provider-7/claude-sonnet-4-5-20250929`
+  - ✅ Correct: `claude-sonnet-4-20250514`
+  - ❌ Wrong: `provider-7/claude-sonnet-4-20250514`
   
   The proxy automatically adds the `provider-7/` prefix when forwarding to A4F.
 
@@ -421,7 +553,7 @@ bunx wrangler secret put A4F_API_KEY
 ## Architecture
 
 ```
-User Request (Anthropic format)
+User Request (Anthropic/OpenAI format)
         │
         ▼
 ┌─────────────────────────────┐
@@ -432,8 +564,10 @@ User Request (Anthropic format)
 │            │                │
 │            ▼                │
 │   ┌─────────────────────┐   │
-│   │ Convert Anthropic   │   │
-│   │ → OpenAI Format     │   │
+│   │ Route by Endpoint   │   │
+│   │ /v1/messages        │──►│ Convert Anthropic → OpenAI
+│   │ /v1/chat/completions│──►│ Pass-through
+│   │ /v1/responses       │──►│ Add provider-5 prefix
 │   └─────────────────────┘   │
 │            │                │
 │            ▼                │
@@ -444,13 +578,13 @@ User Request (Anthropic format)
 │            │                │
 │            ▼                │
 │   ┌─────────────────────┐   │
-│   │ Convert OpenAI      │   │
-│   │ → Anthropic Format  │   │
+│   │ Convert Response    │   │
+│   │ (if needed)         │   │
 │   └─────────────────────┘   │
 └─────────────────────────────┘
         │
         ▼
-User Response (Anthropic format)
+User Response (matching request format)
 ```
 
 ---
@@ -459,6 +593,7 @@ User Response (Anthropic format)
 
 Models available via the `/v1/models` endpoint:
 
+### Claude Models (Anthropic)
 - `claude-opus-4-5-20251101`
 - `claude-sonnet-4-5-20250929`
 - `claude-sonnet-4-20250514`
@@ -468,6 +603,12 @@ Models available via the `/v1/models` endpoint:
 - `claude-3-5-haiku-20241022`
 - `claude-haiku-4-5-20251001`
 - `claude-3-haiku-20240307`
+
+### GPT-5.1 Codex Models (OpenAI)
+- `gpt-5-codex`
+- `gpt-5.1-codex`
+- `gpt-5.1-codex-mini`
+- `gpt-5.1-codex-max`
 
 Check A4F's documentation for the full list of available models.
 
