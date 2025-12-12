@@ -22,10 +22,12 @@ A CloudFlare Worker that proxies multiple API formats to A4F's API gateway, enab
 - ✅ Automatic model prefix handling
 
 ### Common Features
-- ✅ **GET /v1/models** - List available models (Claude + GPT-5.1 Codex)
+- ✅ **GET /v1/models** - List available models (Claude + GPT Codex only)
 - ✅ **GET /health** - Health check endpoint
 - ✅ Dual authentication: `x-api-key` header (Anthropic) or `Authorization: Bearer` (OpenAI)
 - ✅ CORS support for browser-based clients
+- ✅ Path normalization (handles `/v1/v1/` and `//` prefixes)
+- ✅ Flexible path matching (supports both `/v1/*` and `/*` paths)
 
 ---
 
@@ -61,7 +63,9 @@ Response:
 
 ### List Models
 
-Returns available Claude models (from provider-7) and GPT-5.1 Codex models (from provider-5) with prefixes stripped.
+Returns available Claude models (from provider-7) and GPT Codex models (from provider-5) with prefixes stripped.
+
+**Note:** Only GPT Codex models are included (not all GPT models) because they support the `/v1/responses` API. Non-codex GPT models like `gpt-4o` only support `/v1/chat/completions` and should be accessed directly via that endpoint.
 
 ```bash
 curl http://localhost:8787/v1/models \
@@ -143,7 +147,7 @@ curl -X POST http://localhost:8787/v1/chat/completions \
 
 ### OpenAI Responses API (`/v1/responses`)
 
-For GPT-5.1 Codex models. Automatically adds `provider-5/` prefix to model names.
+For GPT Codex models. Automatically adds `provider-5/` prefix to model names.
 
 **Non-Streaming:**
 ```bash
@@ -211,7 +215,16 @@ Token counts are calculated locally using `@lenml/tokenizer-claude` rather than 
 
 ### Tool Choice Mapping
 
-Anthropic's `tool_choice.type: "any"` maps to OpenAI's `"required"`, not `"any"`. See [`convertToolChoice()`](src/index.ts:462).
+Anthropic's `tool_choice.type: "any"` maps to OpenAI's `"required"`, not `"any"`. See [`convertToolChoice()`](src/index.ts:472).
+
+### Path Normalization
+
+The proxy handles various path prefix issues that can occur with different clients:
+- Double `/v1` prefix: `/v1/v1/messages` → `/v1/messages`
+- Double slash prefix: `//v1/messages` → `/v1/messages`
+- Flexible matching: Both `/v1/messages` and `/messages` work
+
+See the main handler in [`src/index.ts`](src/index.ts:1802) for implementation details.
 
 ---
 
@@ -605,7 +618,7 @@ Models available via the `/v1/models` endpoint:
 - `claude-haiku-4-5-20251001`
 - `claude-3-haiku-20240307`
 
-### GPT-5.1 Codex Models (OpenAI)
+### GPT Codex Models (OpenAI)
 - `gpt-5-codex`
 - `gpt-5.1-codex`
 - `gpt-5.1-codex-mini`

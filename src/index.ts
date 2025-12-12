@@ -1198,15 +1198,11 @@ async function handleModels(env: Env): Promise<Response> {
         owned_by: "anthropic",
       }));
 
-    // Filter for GPT-5.1 Codex models (provider-5/gpt-5.1-codex* and gpt-5-codex) and strip the prefix
-    const gptCodexModels = a4fResponse.data
-      .filter((model) => {
-        const id = model.id;
-        return (
-          id.startsWith(`${A4F_RESPONSES_PROVIDER_PREFIX}/gpt-5.1-codex`) ||
-          id === `${A4F_RESPONSES_PROVIDER_PREFIX}/gpt-5-codex`
-        );
-      })
+    // Filter for GPT codex models only (they support the Responses API)
+    // Matches: gpt-5-codex, gpt-5.1-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini, etc.
+    // Non-codex models like gpt-4o, gpt-4.1 are excluded as they only support /v1/chat/completions
+    const gptModels = a4fResponse.data
+      .filter((model) => model.id.includes("codex"))
       .map((model) => ({
         id: model.id.replace(`${A4F_RESPONSES_PROVIDER_PREFIX}/`, ""),
         object: "model",
@@ -1216,7 +1212,7 @@ async function handleModels(env: Env): Promise<Response> {
 
     const models = {
       object: "list",
-      data: [...claudeModels, ...gptCodexModels],
+      data: [...claudeModels, ...gptModels],
     };
 
     return new Response(JSON.stringify(models), {
